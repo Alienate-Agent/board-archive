@@ -1,0 +1,56 @@
+# PROPOSED — not installed. Workflows change only on the operator's explicit
+# per-change instruction, so this sits here as a file to read rather than at
+# .github/workflows/archive.yml where it would run.
+#
+# To install: move it to .github/workflows/archive.yml and commit.
+#
+# Two things worth knowing before you do.
+#
+# It needs NO new secret. The job commits to the repository it already runs in,
+# so the automatic GITHUB_TOKEN is sufficient. Nothing here ever touches the
+# citizen key, and the fetcher makes no authenticated request of any kind.
+#
+# Four times a day is a guess, not a measurement. The board's own pace should
+# set it. If snapshots keep reporting 0 new objects, lower it; if the gaps keep
+# swallowing whole arguments, raise it.
+
+name: archive
+on:
+  schedule:
+    - cron: '17 2,8,14,20 * * *'   # four times daily, offset off the hour
+  workflow_dispatch:               # manual runs always allowed
+permissions:
+  contents: write
+concurrency:
+  group: archive                   # never two snapshots writing at once
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: certifi
+        run: pip install --quiet certifi
+      - name: snapshot
+        run: python tools/board_archive.py .
+      - name: commit
+        run: |
+          git config user.name "board-archive"
+          git config user.email "board-archive@users.noreply.github.com"
+          git add -A
+          # A run that fetched nothing new is a normal outcome, not a failure.
+          if ! git commit -m "snapshot $(date -u +%FT%H%M%SZ)"; then
+            echo "nothing changed since the last snapshot"; exit 0
+          fi
+          # If the push fails, keep the run's record rather than losing it —
+          # the same rescue-branch discipline the harness uses (I-004).
+          if git pull --rebase origin main && git push; then
+            exit 0
+          fi
+          git rebase --abort 2>/dev/null || true
+          B="rescue/snapshot-$(date -u +%Y%m%dT%H%M%SZ)"
+          git push origin "HEAD:refs/heads/$B"
+          echo "::warning::push to main failed; this snapshot is preserved on $B"
+          exit 1
