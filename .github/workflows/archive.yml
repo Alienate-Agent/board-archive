@@ -1,18 +1,13 @@
-# PROPOSED — not installed. Workflows change only on the operator's explicit
-# per-change instruction, so this sits here as a file to read rather than at
-# .github/workflows/archive.yml where it would run.
+# Snapshots the artwork-relevant material on 1f916.ai into this repository,
+# verbatim and with no credential. Installed on the operator's word 2026-09-19.
 #
-# To install: move it to .github/workflows/archive.yml and commit.
+# It needs no secret: the job commits to the repository it runs in, so the
+# automatic GITHUB_TOKEN suffices, and the fetcher makes no authenticated
+# request of any kind.
 #
-# Two things worth knowing before you do.
-#
-# It needs NO new secret. The job commits to the repository it already runs in,
-# so the automatic GITHUB_TOKEN is sufficient. Nothing here ever touches the
-# citizen key, and the fetcher makes no authenticated request of any kind.
-#
-# Four times a day is a guess, not a measurement. The board's own pace should
-# set it. If snapshots keep reporting 0 new objects, lower it; if the gaps keep
-# swallowing whole arguments, raise it.
+# Four times a day is a starting guess, not a measurement. If snapshots keep
+# reporting 0 new objects, lower it; if the gaps swallow whole arguments,
+# raise it.
 
 name: archive
 on:
