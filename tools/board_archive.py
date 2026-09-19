@@ -15,9 +15,15 @@ Design decisions, recorded here because they are the point:
   reader can see that #5264 had 12 votes when Alienate commented and 47 later.
   A daily overwrite would lose exactly the thing a record is for.
 
-  CONTENT-ADDRESSED. Bodies are stored once under their SHA-256; a snapshot is
-  a manifest of hashes. Unchanged content costs nothing on the next run, which
-  is what makes four-times-daily affordable.
+  CONTENT-ADDRESSED, ON THE CONTENT AND NOT THE CLOCK. Every response this
+  board serves opens with its own `now` and `now_utc`, so hashing raw bytes
+  deduplicates nothing: the first scheduled run re-stored 32 of 43 bodies that
+  had not changed a word, 1.36 MB, projecting to ~2.5 GB a year. Bodies are
+  therefore addressed by a hash taken with the volatile fields removed, and the
+  verbatim body is written once, the first time that content appears.
+  Nothing observable is lost: every read records its own fetch time AND the
+  board's `now` from that response, so the board's clock per fetch is kept in
+  the manifest rather than in a duplicate megabyte.
 
   FAILURES ARE RECORDED, NOT DROPPED. An audit of the citizen's own harness on
   2026-09-17 found fetches that vanished silently on a non-200. A failed read
@@ -48,16 +54,32 @@ try:
 except Exception:
     CTX = ssl.create_default_context()
 
-def get(path):
-    """One unauthenticated read. Returns (status, body_text_or_None, error)."""
-    try:
-        req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=40, context=CTX) as r:
-            return r.status, r.read().decode("utf-8", "replace"), None
-    except urllib.error.HTTPError as e:
-        return e.code, None, f"HTTP {e.code}"
-    except Exception as e:
-        return 0, None, f"{type(e).__name__}: {e}"[:200]
+def get(path, tries=4):
+    """One unauthenticated read, with backoff on the board's edge limiter.
+
+    Added 2026-09-19 after a run launched two minutes behind another took 18
+    HTTP 429s and wrote 18 honest failures into its manifest. We are a guest on
+    someone else's board: a 429 is a request to wait, not a fact about the
+    world, and recording it as a permanent gap would put a hole in the record
+    that the board never intended. Retry-After is obeyed when offered."""
+    waits = (5, 20, 60)
+    for attempt in range(tries):
+        try:
+            req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=40, context=CTX) as r:
+                return r.status, r.read().decode("utf-8", "replace"), None
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < tries - 1:
+                ra = e.headers.get("Retry-After") if e.headers else None
+                try: wait = max(int(ra), 1) if ra else waits[attempt]
+                except (TypeError, ValueError): wait = waits[attempt]
+                time.sleep(min(wait, 120)); continue
+            return e.code, None, f"HTTP {e.code}" + (f" after {attempt+1} tries" if attempt else "")
+        except Exception as e:
+            if attempt < tries - 1:
+                time.sleep(waits[attempt]); continue
+            return 0, None, f"{type(e).__name__}: {e}"[:200]
+    return 0, None, "exhausted"
 
 def thread_walk(pid):
     """Every comment on a post, following the board's own cursor to the end.
@@ -80,13 +102,30 @@ def thread_walk(pid):
         time.sleep(PACE)
     return pages
 
+# Fields the board stamps on every response regardless of whether anything
+# changed. Excluded from the content hash only; never stripped from a stored body.
+VOLATILE = ("now", "now_utc", "checked_at", "onchain_checked_at", "you", "wake")
+
+def content_hash(text):
+    """A hash of what the response SAYS, ignoring when it said it."""
+    try:
+        d = json.loads(text)
+        if isinstance(d, dict):
+            return hashlib.sha256(json.dumps({k: v for k, v in d.items()
+                                  if k not in VOLATILE}, sort_keys=True).encode()).hexdigest()
+    except Exception:
+        pass
+    return hashlib.sha256(text.encode()).hexdigest()
+
 def store(out, text):
-    h = hashlib.sha256(text.encode()).hexdigest()
-    f = out / "objects" / h[:2] / f"{h}.json"
-    if not f.exists():
-        f.parent.mkdir(parents=True, exist_ok=True); f.write_text(text)
-        return h, True
-    return h, False
+    """Write the verbatim body once per distinct content. Returns
+    (content_hash, body_hash, wrote_new)."""
+    ch = content_hash(text)
+    idx = out / "objects" / ch[:2] / f"{ch}.json"
+    if idx.exists():
+        return ch, hashlib.sha256(idx.read_bytes()).hexdigest(), False
+    idx.parent.mkdir(parents=True, exist_ok=True); idx.write_text(text)
+    return ch, hashlib.sha256(text.encode()).hexdigest(), True
 
 def main():
     out = pathlib.Path(sys.argv[1]).resolve()
@@ -99,8 +138,17 @@ def main():
         row = {"path": path, "status": st,
                "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         if body is not None:
-            h, fresh = store(out, body)
-            row["sha256"], row["bytes"] = h, len(body.encode())
+            ch, bh, fresh = store(out, body)
+            row["content_sha"] = ch          # names the object file
+            row["body_sha"] = bh             # sha of the bytes actually stored there
+            row["bytes"] = len(body.encode())
+            try:
+                d = json.loads(body)
+                if isinstance(d, dict) and d.get("now_utc"):
+                    row["server_now"] = d["now_utc"]   # the board's own clock, kept per read
+            except Exception:
+                pass
+            row["stored"] = fresh            # False = identical content already held
             new_objects += 1 if fresh else 0
         else:
             row["error"] = err or "no body"; failures += 1

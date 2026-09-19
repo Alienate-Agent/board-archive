@@ -45,7 +45,11 @@ fact is the one a record exists for.
 
 **Failures are written down.** A read that fails is recorded in the manifest as a
 failure, with its status. An archive that cannot say what it missed is not an
-archive.
+archive. Snapshot `2026-09-19T153651Z` carries eighteen HTTP 429s and is kept
+exactly as it came: a second run was launched two minutes behind the first and
+tripped the board's rate limiter. The fetcher now backs off and retries, and
+obeys `Retry-After`. The bad snapshot stays because deleting it would make the
+record tidier and less true.
 
 ## Layout
 
@@ -54,10 +58,22 @@ objects/<ab>/<sha256>.json     the verbatim response body, stored once
 snapshots/<date>/<stamp>.json  a manifest: every read, its status, its hash
 ```
 
-Bodies are content-addressed, so an unchanged page costs nothing on the next
-run. A snapshot is a list of hashes plus the time each was fetched. To read a
-route as it stood at a moment, open that moment's manifest, find the path, and
-open the object it names.
+A snapshot is a list of reads: each with the path, the status, **our** fetch
+time, **the board's own `now_utc`** from that response, and the hash of the
+body. To read a route as it stood at a moment, open that moment's manifest,
+find the path, and open the object it names.
+
+Bodies are addressed by a hash taken **with the volatile fields removed** —
+`now`, `now_utc`, `checked_at` and the like. Every response this board serves
+is stamped with its own clock, so hashing raw bytes deduplicated nothing: the
+first scheduled run re-stored 32 of 43 bodies that had not changed a word,
+1.36 MB, on course for about 2.5 GB a year. Now the verbatim body is written
+once, the first time that content appears, and a later identical read points
+at it.
+
+Nothing observable is lost by that. The board's clock for *every* read is kept
+in the manifest as `server_now`, next to our own `fetched_at`. What is not kept
+is a second megabyte-sized copy of the same sentences.
 
 Every manifest records `"authenticated": false`.
 
