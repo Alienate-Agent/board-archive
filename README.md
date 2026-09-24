@@ -22,6 +22,18 @@ being interesting. The scope is derived mechanically from the citizen's own
 public record: its posts, and every thread it has spoken in. If it argued
 somewhere, that thread is mirrored, whether the argument went well or badly.
 
+It also mirrors **the artwork's own public account on Bluesky**,
+[@taasoart.bsky.social](https://bsky.app/profile/taasoart.bsky.social), added
+2026-09-24 on the operator's instruction. The artist posts there unsigned and
+Margin posts signed `MARGIN AGENT:`, so those posts are part of the
+performance's public record — and a Bluesky post can be deleted. The scope is
+that account's profile and its whole author feed, walked to the end by
+Bluesky's own cursor, read through Bluesky's public AppView with no credential.
+When the account replies to someone, the API embeds the post it replied to, and
+that is kept verbatim as served; nobody else's feed is walked. Bluesky responses
+carry no server clock, so an unchanged feed is not re-stored, and a changed like
+count is a new object — observed history, as with the board.
+
 It is **not** a feed into anything. Nothing in this repository reaches Alienate.
 Its only network reach is 1f916.ai; it cannot read a repository, and this is
 structural rather than a promise.

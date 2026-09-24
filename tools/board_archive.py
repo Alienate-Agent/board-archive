@@ -36,7 +36,7 @@ Design decisions, recorded here because they are the point:
 
 Usage: board_archive.py <output-dir>
 """
-import json, hashlib, pathlib, sys, time, datetime, ssl, urllib.request, urllib.error
+import json, hashlib, pathlib, sys, time, datetime, ssl, urllib.request, urllib.error, urllib.parse
 
 BASE = "https://1f916.ai"
 UA = "alienate-board-archive (public mirror; unauthenticated)"
@@ -65,7 +65,8 @@ def get(path, tries=4):
     waits = (5, 20, 60)
     for attempt in range(tries):
         try:
-            req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
+            url = path if path.startswith("https://") else BASE + path
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=40, context=CTX) as r:
                 return r.status, r.read().decode("utf-8", "replace"), None
         except urllib.error.HTTPError as e:
@@ -127,6 +128,34 @@ def store(out, text):
     idx.parent.mkdir(parents=True, exist_ok=True); idx.write_text(text)
     return ch, hashlib.sha256(text.encode()).hexdigest(), True
 
+# The artwork's own public account on Bluesky (added 2026-09-24, operator
+# instruction). The artist posts there unsigned and Margin posts signed, so it
+# is part of the performance's public record, and a Bluesky post can be
+# deleted. Read through Bluesky's public AppView with no credential, like
+# everything else here. Scope is the account's own feed and profile: the API
+# embeds the post being replied to when the account replies to someone, and
+# that is kept verbatim as served, but no one else's feed is walked.
+BSKY = "https://public.api.bsky.app/xrpc/"
+BSKY_ACTOR = "taasoart.bsky.social"
+
+def bluesky_reads():
+    """Profile, then the whole author feed, following Bluesky's own cursor to
+    the end. Returns [(url, status, body, error), ...] in order."""
+    out = []
+    u = f"{BSKY}app.bsky.actor.getProfile?actor={BSKY_ACTOR}"
+    st, body, err = get(u); out.append((u, st, body, err)); time.sleep(PACE)
+    cursor, seen = None, set()
+    for _ in range(50):
+        u = f"{BSKY}app.bsky.feed.getAuthorFeed?actor={BSKY_ACTOR}&limit=100" + (
+            f"&cursor={urllib.parse.quote(cursor)}" if cursor else "")
+        st, body, err = get(u); out.append((u, st, body, err))
+        if st != 200 or not body: break
+        try: nxt = json.loads(body).get("cursor")
+        except Exception: break
+        if not nxt or nxt in seen: break
+        seen.add(nxt); cursor = nxt; time.sleep(PACE)
+    return out
+
 def main():
     out = pathlib.Path(sys.argv[1]).resolve()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -171,9 +200,14 @@ def main():
             record(pg["path"], pg["status"], pg["body"], pg["error"])
         time.sleep(PACE)
 
+    bsky = bluesky_reads()
+    for u, st, body, err in bsky:
+        record(u, st, body, err)
+
     manifest = {"fetched_at": now.isoformat(), "base": BASE, "authenticated": False,
                 "scope": {"surfaces": len(SURFACES), "threads": len(pids),
-                          "thread_ids": sorted(pids)},
+                          "thread_ids": sorted(pids),
+                          "bluesky": {"actor": BSKY_ACTOR, "reads": len(bsky)}},
                 "counts": {"reads": len(entries), "failures": failures,
                            "new_objects": new_objects},
                 "reads": entries}
